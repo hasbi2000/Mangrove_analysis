@@ -1,0 +1,78 @@
+import geemap
+import ee
+
+!pip install xee
+import xee
+import xarray as xr
+
+ee.Authenticate()
+ee.Initialize(
+    project='hasbihusaini',
+    opt_url='https://earthengine-highvolume.googleapis.com')
+
+map = geemap.Map(basemap = 'SATELLITE')
+
+map
+
+roi = map.draw_last_feature.geometry()
+
+mangrove = ee.ImageCollection("LANDSAT/MANGROVE_FORESTS")
+
+single_image = mangrove.median().clip(roi)
+map.addLayer(single_image, {}, 'mangrove')
+
+def calculate_lst(image) :
+  lst = image.select('LST_Day_1km').multiply(0.02).subtract(273.15)
+  return lst.rename('LST').copyProperties(image, ['system:time_start', 'system:time_end'])
+def calculate_ndvi(image) :
+  ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI')
+  return ndvi.copyProperties(image, ['system:time_start', 'system:time_end'])
+def calculate_vhi(ndvi_img, lst_img):
+  ndvi_min = ndvi_collection.select('NDVI').min()
+  ndvi_max = ndvi_collection.select('NDVI').max()
+  lst_min = lst_collection.select('LST').min()
+  lst_max = lst_collection.select('LST').max()
+  vci = ndvi_img.subtract(ndvi_min).divide(ndvi_max.subtract(ndvi_min)).multiply(100)
+  tci = lst_max.subtract(lst_img).divide(lst_max.subtract(lst_min)).multiply(100)
+  vhi = vci.add(tci).divide(2).updateMask(single_image).rename('VHI')
+  return vhi.copyProperties(ndvi_img, ['system:time_start', 'system:time_end'])
+
+ndvi_collection = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED").filterDate('2018-01-01', '2025-12-31').filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)).map(calculate_ndvi)
+lst_collection = ee.ImageCollection("MODIS/061/MOD11A2").filterDate('2018-01-01', '2025-12-31').map(calculate_lst)
+
+median_lst2018 = lst_collection.filterDate('2018-01-01', '2018-12-31').median()
+median_ndvi2018 = ndvi_collection.filterDate('2018-01-01', '2018-12-31').median()
+median_lst2019 = lst_collection.filterDate('2019-01-01', '2019-12-31').median()
+median_ndvi2019 = ndvi_collection.filterDate('2019-01-01', '2019-12-31').median()
+median_lst2020 = lst_collection.filterDate('2020-01-01', '2020-12-31').median()
+median_ndvi2020 = ndvi_collection.filterDate('2020-01-01', '2020-12-31').median()
+median_lst2021 = lst_collection.filterDate('2021-01-01', '2021-12-31').median()
+median_ndvi2021 = ndvi_collection.filterDate('2021-01-01', '2021-12-31').median()
+median_lst2022 = lst_collection.filterDate('2022-01-01', '2022-12-31').median()
+median_ndvi2022 = ndvi_collection.filterDate('2022-01-01', '2022-12-31').median()
+median_lst2023 = lst_collection.filterDate('2023-01-01', '2023-12-31').median()
+median_ndvi2023 = ndvi_collection.filterDate('2023-01-01', '2023-12-31').median()
+median_lst2024 = lst_collection.filterDate('2024-01-01', '2024-12-31').median()
+median_ndvi2024 = ndvi_collection.filterDate('2024-01-01', '2024-12-31').median()
+
+def image_with_date (image, date_str) :
+  return image.set('system:time_start', ee.Date(date_str).millis())
+vhi_image2018 = image_with_date(calculate_vhi(median_ndvi2018, median_lst2018), '2018-12-31')
+vhi_image2019 = image_with_date(calculate_vhi(median_ndvi2019, median_lst2019), '2019-12-31')
+vhi_image2020 = image_with_date(calculate_vhi(median_ndvi2020, median_lst2020), '2020-12-31')
+vhi_image2021 = image_with_date(calculate_vhi(median_ndvi2021, median_lst2021), '2021-12-31')
+vhi_image2022 = image_with_date(calculate_vhi(median_ndvi2022, median_lst2022), '2022-12-31')
+vhi_image2023 = image_with_date(calculate_vhi(median_ndvi2023, median_lst2023), '2023-12-31')
+vhi_image2024 = image_with_date(calculate_vhi(median_ndvi2024, median_lst2024), '2024-12-31')
+ts_collection = ee.ImageCollection([vhi_image2018, vhi_image2019,vhi_image2020, vhi_image2021, vhi_image2022, vhi_image2023,vhi_image2024])
+aa = ts_collection.map(lambda img : img.clip(roi))
+ts_collection
+
+import xarray as xr
+import matplotlib.pyplot as plt
+
+ds = xr.open_dataset(aa, engine = 'ee', crs = 'EPSG:4326', scale = 0.0001, geometry = roi )
+ds
+
+ds['VHI'].plot(x = 'lon', y = 'lat', cmap = 'RdYlGn', col = 'time', col_wrap = 4, robust =True )
+plt.savefig("data.png", dpi=600, bbox_inches='tight')
