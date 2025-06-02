@@ -14,6 +14,8 @@ map = geemap.Map(basemap = 'SATELLITE')
 
 map
 
+*DEFINE YOUR ROI FIRST, GO TO THE BASEMAP LAYER*
+
 roi = map.draw_last_feature.geometry()
 
 mangrove = ee.ImageCollection("LANDSAT/MANGROVE_FORESTS")
