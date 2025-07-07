@@ -1,1 +1,165 @@
+import geemap
+import ee
+! pip install xee
+import xee
+import xarray as xr
 
+ee.Authenticate()
+ee.Initialize(
+    project = 'hasbihusaini',
+    opt_url = 'https://earthengine-highvolume.googleapis.com'
+)
+
+map = geemap.Map()
+map
+
+roi = map.draw_last_feature.geometry()
+
+landcover = ee.ImageCollection("COPERNICUS/Landcover/100m/Proba-V-C3/Global").select('discrete_classification').mean()
+urban_only = landcover.lt(50).clip(roi)
+landcoverfile = landcover.updateMask(urban_only)
+landcover_fix = landcoverfile
+
+mangrove = ee.ImageCollection("LANDSAT/MANGROVE_FORESTS").mean().clip(roi)
+
+mangrove_samples = mangrove.sample(region=roi,scale=30,numPixels=300,seed=10,geometries=True).map(lambda f: f.set({'vegetation': 'mangrove','class': 1}))
+
+nonmangrove_samples = landcover_fix.sample(region=roi,scale=30,numPixels=200,seed=10,geometries=True).map(lambda f: f.set({'vegetation': 'nonmangrove','class': 0}))
+
+training_samples = mangrove_samples.merge(nonmangrove_samples)
+training_samples
+print('Total training samples:', training_samples.size().getInfo())
+
+# start_date = '2018-01-01'
+# end_date = '2023-12-31'
+
+def add_indices(image):
+    nir = image.select('B8')
+    red = image.select('B4')
+    swir1 = image.select('B11')
+    green = image.select('B3')
+    ndvi = nir.subtract(red).divide(nir.add(red)).rename('NDVI')
+    ndmi = nir.subtract(swir1).divide(nir.add(swir1)).rename('NDMI')
+    mndwi = green.subtract(swir1).divide(green.add(swir1)).rename('MNDWI')
+    sr = nir.divide(red).rename('SR')
+    r54 = swir1.divide(nir).rename('R54')
+    r35 = red.divide(swir1).rename('R35')
+    gcvi = nir.divide(green).subtract(1).rename('GCVI')
+    return image.addBands([ndvi, ndmi, mndwi, sr, r54, r35, gcvi])
+
+bands_to_select = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12']
+sentinel = ee.ImageCollection("COPERNICUS/S2_SR").filterDate(start_date, end_date).filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30)).select(bands_to_select).map(add_indices)
+
+composite = sentinel.mean().clip(roi)
+
+dem = ee.Image("USGS/SRTMGL1_003").clip(roi)
+elevation_mask = dem.lt(65)
+
+ndvi_mask = composite.select('NDVI').gt(0.25)
+mndwi_mask = composite.select('MNDWI').gt(-0.50)
+
+cmps = composite.updateMask(ndvi_mask).updateMask(mndwi_mask).updateMask(elevation_mask)
+
+bands = ['B8', 'B11', 'B4', 'NDVI', 'NDMI', 'MNDWI', 'SR', 'GCVI']
+image1 = cmps.select(bands)
+
+samples = image1.sampleRegions(collection=training_samples,properties=['vegetation', 'class'],scale=30).randomColumn('random')
+
+split = 0.7
+training = samples.filter(ee.Filter.lt('random', split))
+testing = samples.filter(ee.Filter.gte('random', split))
+testing
+
+print('Total testing samples:', testing.size().getInfo())
+
+bands = ['B8', 'B11', 'B4', 'NDVI', 'NDMI', 'MNDWI', 'SR', 'GCVI']
+classifier = ee.Classifier.smileRandomForest(100).train(features=training,classProperty='class',inputProperties=bands)
+
+validation = testing.classify(classifier)
+testAccuracy = validation.errorMatrix('class', 'classification')
+print('Validation error matrix RF', testAccuracy.getInfo())
+print('Validation overall accuracy RF', testAccuracy.accuracy().getInfo())
+
+classified2018 = image2018.select(['B8', 'B11', 'B4', 'NDVI', 'NDMI', 'MNDWI', 'SR', 'GCVI']).classify(classifier)
+pixelcount2018 = classified2018.connectedPixelCount(100, False);
+countmask2018 = pixelcount2018.select(0).gt(15)
+
+classified2019 = image2019.select(['B8', 'B11', 'B4', 'NDVI', 'NDMI', 'MNDWI', 'SR', 'GCVI']).classify(classifier)
+pixelcount2019 = classified2019.connectedPixelCount(100, False);
+countmask2019 = pixelcount2019.select(0).gt(15)
+
+classified2020 = image2020.select(['B8', 'B11', 'B4', 'NDVI', 'NDMI', 'MNDWI', 'SR', 'GCVI']).classify(classifier)
+pixelcount2020 = classified2020.connectedPixelCount(100, False);
+countmask2020 = pixelcount2020.select(0).gt(15)
+
+classified2021 = image2021.select(['B8', 'B11', 'B4', 'NDVI', 'NDMI', 'MNDWI', 'SR', 'GCVI']).classify(classifier)
+pixelcount2021 = classified2021.connectedPixelCount(100, False);
+countmask2021 = pixelcount2021.select(0).gt(15)
+
+classmask2018 = classified2018.select('classification').eq(1);
+classed2018 = classified2018.updateMask(countmask2018).updateMask(classmask2018);
+classed2018
+
+classmask2019 = classified2019.select('classification').eq(1);
+classed2019 = classified2019.updateMask(countmask2019).updateMask(classmask2019);
+classed2019
+
+classmask2020 = classified2020.select('classification').eq(1);
+classed2020 = classified2020.updateMask(countmask2020).updateMask(classmask2020);
+classed2020
+
+classmask2021 = classified2021.select('classification').eq(1);
+classed2021 = classified2021.updateMask(countmask2021).updateMask(classmask2021);
+classed2021
+
+ts_collection = ee.ImageCollection([classed2018, classed2019, classed2020, classed2021])
+
+ds = xr.open_dataset(ts_collection, engine = 'ee', crs = 'EPSG:4326', scale = 0.0001, geometry = roi )
+# ds_1 = ds.rename({'NDVI': 'Above_Carbon'})
+ds
+
+import matplotlib.pyplot as plt
+
+ds = ds.assign_coords(time=['2018', '2019', '2020', '2021'])
+ds['classification'].plot(x = 'lon', y = 'lat', cmap = 'RdBu', col = 'time', col_wrap = 2, robust = True, vmin = 0, vmax = 0)
+plt.savefig('ndci_facet_plot.png', dpi=600, bbox_inches='tight')
+
+area2018 = classed2018.multiply(ee.Image.pixelArea()).divide(10000).reduceRegion(
+    reducer=ee.Reducer.sum(),
+    geometry=roi,
+    scale=30,
+    maxPixels=1e13,
+    tileScale=16
+).get('classification')
+
+print(area2018.getInfo(), 'Mangrove 2018 (ha)')
+
+area2019 = classed2019.multiply(ee.Image.pixelArea()).divide(10000).reduceRegion(
+    reducer=ee.Reducer.sum(),
+    geometry=roi,
+    scale=30,
+    maxPixels=1e13,
+    tileScale=16
+).get('classification')
+
+print(area2019.getInfo(), 'Mangrove 2018 (ha)')
+
+area2020 = classed2020.multiply(ee.Image.pixelArea()).divide(10000).reduceRegion(
+    reducer=ee.Reducer.sum(),
+    geometry=roi,
+    scale=30,
+    maxPixels=1e13,
+    tileScale=16
+).get('classification')
+
+print(area2020.getInfo(), 'Mangrove 2020 (ha)')
+
+area2021 = classed2021.multiply(ee.Image.pixelArea()).divide(10000).reduceRegion(
+    reducer=ee.Reducer.sum(),
+    geometry=roi,
+    scale=30,
+    maxPixels=1e13,
+    tileScale=16
+).get('classification')
+
+print(area2021.getInfo(), 'Mangrove 2021 (ha)')
